@@ -3,6 +3,13 @@ package org.acme;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+
+import org.eclipse.microprofile.reactive.messaging.Channel;
+import org.eclipse.microprofile.reactive.messaging.Emitter;
+
+import io.quarkus.logging.Log;
+
 import java.util.List;
 
 @Path("/characters")
@@ -12,6 +19,10 @@ public class CharacterResource {
 
     @Inject
     CharacterRepository repository;
+
+    @Inject
+    @Channel("character-events-out")
+    Emitter<CharacterEvent> characterEventEmitter;
 
     // GET all characters
     @GET
@@ -28,23 +39,31 @@ public class CharacterResource {
 
     // POST create character
     @POST
-    public String createCharacter(Character character) {
+    public Response createCharacter(Character character) {
+        // Check if a character with the same name already exists
+        if (repository.find("name", character.name).firstResult() != null) {
+            return Response.status(409).entity("Character with this name already exists!").build();
+        }
+
         repository.persist(character);
-        return "Character saved!";
+        return Response.ok("Character saved!").build();
     }
 
     // PATCH update character by name
     @PATCH
     @Path("/{name}")
-    public String updateCharacter(@PathParam("name") String name, Character updatedCharacter) {
+    public Response updateCharacter(@PathParam("name") String name, Character updatedCharacter) {
         Character character = repository.find("name", name).firstResult();
         if (character == null) {
-            throw new WebApplicationException("Character not found", 404);
+            return Response.status(404).entity("Character not found").build();
         }
 
-        // Update only if values are provided
-        if (updatedCharacter.name != null)
-            character.name = updatedCharacter.name;
+        // Optimistic Locking: Prüfen, ob die Version übereinstimmt
+        if (updatedCharacter.version != character.version) {
+            return Response.status(409).entity("Conflict: Character was updated by someone else!").build();
+        }
+
+        // Änderungen übernehmen
         if (updatedCharacter.race != null)
             character.race = updatedCharacter.race;
         if (updatedCharacter.characterClass != null)
@@ -52,8 +71,11 @@ public class CharacterResource {
         if (updatedCharacter.level > 0)
             character.level = updatedCharacter.level;
 
+        // Version um 1 erhöhen
+        character.version++;
+
         repository.update(character);
-        return "Character updated!";
+        return Response.ok("Character updated!").build();
     }
 
     // DELETE character by name
@@ -66,4 +88,29 @@ public class CharacterResource {
         }
         return "Character deleted!";
     }
+
+    @PATCH
+    @Path("/{name}/level-up")
+    public String levelUpCharacter(@PathParam("name") String name) {
+        Character character = repository.find("name", name).firstResult();
+        if (character == null) {
+            throw new WebApplicationException("Character not found", 404);
+        }
+
+        character.level++;
+        repository.update(character);
+
+        Log.info("✅ Character updated, preparing Kafka event...");
+        System.out.println("✅ Character updated, preparing Kafka event...");
+        System.out.flush();
+
+        CharacterEvent event = new CharacterEvent(character.name, character.level);
+        Log.info("🚀 Sending Kafka event: " + event);
+        System.out.println("Sending Kafka event: " + event);
+        System.out.flush(); // Forces output to appear immediately
+        characterEventEmitter.send(event);
+
+        return "Character leveled up!";
+    }
+
 }

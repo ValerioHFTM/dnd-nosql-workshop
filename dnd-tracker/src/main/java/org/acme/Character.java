@@ -8,4 +8,7 @@ public class Character extends PanacheMongoEntity {
     public String race;
     public String characterClass;
     public int level;
+
+    @BsonProperty("version") // Speichert es in MongoDB unter dem Namen "version"
+    public int version = 1;
 }
